@@ -1,6 +1,8 @@
 const WebSocket = require('ws');
 const http = require('http');
 const net = require('net');
+const ToolManager = require('./tools');
+const N8nWorkflowTool = require('./tools/n8n-workflow');
 
 class MCPServer {
   constructor(config = {}) {
@@ -11,6 +13,10 @@ class MCPServer {
     };
     this.wss = null;
     this.server = null;
+    this.toolManager = new ToolManager();
+    
+    // Register tools
+    this.toolManager.registerTool('n8n_workflow', new N8nWorkflowTool());
   }
 
   async findAvailablePort(startPort) {
@@ -69,8 +75,15 @@ class MCPServer {
         case 'initialize':
           this.handleInitialize(ws, message);
           break;
+        case 'tool/execute':
+          await this.handleToolExecution(ws, message);
+          break;
+        case 'tool/list':
+          this.handleToolList(ws, message);
+          break;
         default:
           console.warn(`Unknown message method: ${message.method}`);
+          this.sendError(ws, new Error(`Unknown method: ${message.method}`));
       }
     } catch (error) {
       console.error('Error handling message:', error);
@@ -87,16 +100,48 @@ class MCPServer {
           name: "n8n-mcp-server",
           version: "1.0.0"
         },
-        capabilities: {}
+        capabilities: {
+          tools: this.toolManager.getToolDefinitions()
+        }
       }
     };
     
     ws.send(JSON.stringify(response));
   }
 
-  sendError(ws, error) {
+  async handleToolExecution(ws, message) {
+    try {
+      const { tool, params } = message.params;
+      const result = await this.toolManager.executeTool(tool, params);
+      
+      const response = {
+        jsonrpc: "2.0",
+        id: message.id,
+        result
+      };
+      
+      ws.send(JSON.stringify(response));
+    } catch (error) {
+      this.sendError(ws, error, message.id);
+    }
+  }
+
+  handleToolList(ws, message) {
+    const response = {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        tools: this.toolManager.getToolDefinitions()
+      }
+    };
+    
+    ws.send(JSON.stringify(response));
+  }
+
+  sendError(ws, error, id = null) {
     const errorResponse = {
       jsonrpc: "2.0",
+      id,
       error: {
         code: -32000,
         message: error.message || 'Internal server error'
